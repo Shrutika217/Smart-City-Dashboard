@@ -10,19 +10,21 @@ import altair as alt
 # Fetch function
 # ------------------------
 def fetch_openaq(city, parameters, date_from, date_to):
-    base_url = "https://api.openaq.org/v2/measurements"
+    base_url = "https://api.openaq.org/v3/measurements"  # ✅ Updated to v3
     params = {
         "city": city,
         "parameter": parameters,
         "date_from": date_from,
         "date_to": date_to,
-        "limit": 10000,
+        "limit": 1000,  # v3 has lower per-request limits
+        "page": 1,
+        "offset": 0,
         "sort": "desc",
         "order_by": "datetime"
     }
 
     try:
-        st.info(f"🔗 Fetching from OpenAQ: {base_url} with params {params}")
+        st.info(f"🔗 Fetching from OpenAQ v3: {base_url} with params {params}")
         resp = requests.get(base_url, params=params, timeout=20)
 
         if resp.status_code != 200:
@@ -36,12 +38,12 @@ def fetch_openaq(city, parameters, date_from, date_to):
 
         df = pd.DataFrame(results)
 
-        # Extract coordinates if available
+        # Extract coordinates
         if "coordinates" in df.columns:
             df["lat"] = df["coordinates"].apply(lambda x: x.get("latitude") if isinstance(x, dict) else None)
             df["lon"] = df["coordinates"].apply(lambda x: x.get("longitude") if isinstance(x, dict) else None)
 
-        # Ensure datetime is parsed
+        # Parse datetime
         if "date" in df.columns:
             df["datetime"] = pd.to_datetime(df["date"].apply(lambda x: x.get("utc")))
         
