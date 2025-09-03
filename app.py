@@ -7,30 +7,11 @@ from datetime import datetime
 import altair as alt
 
 # ------------------------
-# Fetch cities
+# Fetch all locations (and derive cities)
 # ------------------------
-def fetch_cities(country="IN"):
-    url = "https://api.openaq.org/v3/cities"
-    params = {"country": country, "limit": 100}
-    headers = {"X-API-Key": st.secrets["OPENAQ_API_KEY"]}
-
-    try:
-        resp = requests.get(url, params=params, headers=headers, timeout=20)
-        if resp.status_code != 200:
-            st.error(f"❌ Failed to fetch cities: {resp.status_code} - {resp.text}")
-            return []
-        data = resp.json()
-        return sorted([city["name"] for city in data.get("results", []) if "name" in city])
-    except Exception as e:
-        st.error(f"⚠️ Error fetching cities: {e}")
-        return []
-
-# ------------------------
-# Fetch locations for a city
-# ------------------------
-def fetch_locations(city, country="IN"):
+def fetch_locations(country="IN"):
     url = "https://api.openaq.org/v3/locations"
-    params = {"country": country, "city": city, "limit": 100}
+    params = {"country": country, "limit": 1000}
     headers = {"X-API-Key": st.secrets["OPENAQ_API_KEY"]}
 
     try:
@@ -38,8 +19,10 @@ def fetch_locations(city, country="IN"):
         if resp.status_code != 200:
             st.error(f"❌ Failed to fetch locations: {resp.status_code} - {resp.text}")
             return []
+
         data = resp.json()
-        return sorted([loc["name"] for loc in data.get("results", []) if "name" in loc])
+        results = data.get("results", [])
+        return results
     except Exception as e:
         st.error(f"⚠️ Error fetching locations: {e}")
         return []
@@ -56,7 +39,6 @@ def fetch_measurements(location, parameters, date_from, date_to):
         "date_to": date_to,
         "limit": 1000,
         "page": 1,
-        "offset": 0,
         "sort": "desc",
         "order_by": "datetime"
     }
@@ -94,22 +76,25 @@ def fetch_measurements(location, parameters, date_from, date_to):
 # Streamlit UI
 # ------------------------
 st.title("🏙️ Smart City Air Quality Dashboard")
-
 st.sidebar.header("Controls")
 
-# Step 1: Select city
-cities = fetch_cities()
+# Fetch all locations once
+locations_data = fetch_locations()
+
+# Derive city list
+cities = sorted({loc.get("city") for loc in locations_data if loc.get("city")})
 selected_city = st.sidebar.selectbox("Select City", options=cities)
 
-# Step 2: Select station in city
-locations = fetch_locations(selected_city) if selected_city else []
-selected_location = st.sidebar.selectbox("Select Monitoring Station", options=locations)
+# Filter locations by city
+city_locations = [loc for loc in locations_data if loc.get("city") == selected_city]
+station_names = [loc["name"] for loc in city_locations]
+selected_location = st.sidebar.selectbox("Select Monitoring Station", options=station_names)
 
-# Step 3: Pollutants
+# Pollutants
 parameters = ["pm25", "pm10", "so2", "no2", "co", "o3", "bc"]
 selected_parameters = st.sidebar.multiselect("Pollutants", options=parameters, default=["pm25", "pm10"])
 
-# Step 4: Date range
+# Date range
 date_from = st.sidebar.date_input("From date", datetime(2023, 1, 1))
 date_to = st.sidebar.date_input("To date", datetime.today())
 
