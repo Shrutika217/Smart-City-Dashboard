@@ -1,178 +1,127 @@
 import streamlit as st
-import pandas as pd
 import requests
-from datetime import date, timedelta
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
+from datetime import datetime
+import altair as alt
 
-# ----------------------------------
-# CONFIG
-# ----------------------------------
-st.set_page_config(
-    page_title="Smart City Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-OPENAQ_ENDPOINT = "https://api.openaq.org/v2/measurements"
-
-# Predefined city coordinates for fallback queries
-CITY_COORDS = {
-    "Delhi": (28.7041, 77.1025),
-    "Mumbai": (19.0760, 72.8777),
-    "Bengaluru": (12.9716, 77.5946),
-    "Chennai": (13.0827, 80.2707),
-    "Kolkata": (22.5726, 88.3639),
-    "Hyderabad": (17.3850, 78.4867),
-}
-
-
-# ----------------------------------
-# HELPERS
-# ----------------------------------
-@st.cache_data(show_spinner=False)
-def fetch_openaq(city: str, parameters: list[str], date_from: str, date_to: str,
-                 max_pages: int = 8, per_page: int = 1000) -> pd.DataFrame:
-    """
-    Fetch measurements from OpenAQ v2 with pagination + fallback to coordinates radius query.
-    Returns dataframe or empty df. Debug info is shown in Streamlit.
-    """
-    if not parameters:
-        return pd.DataFrame()
-
-    rows = []
-    page = 1
-
-    # Primary: query by city name
-    base_params = {
+# ------------------------
+# Fetch function
+# ------------------------
+def fetch_openaq(city, parameters, date_from, date_to):
+    base_url = "https://api.openaq.org/v2/measurements"
+    params = {
         "city": city,
-        "parameter": ",".join(parameters),
+        "parameter": parameters,
         "date_from": date_from,
         "date_to": date_to,
-        "limit": per_page,
-        "sort": "asc",
-        "order_by": "date",
+        "limit": 10000,
+        "sort": "desc",
+        "order_by": "datetime"
     }
 
-    st.write("OpenAQ Query (city):", base_params)
+    try:
+        st.info(f"🔗 Fetching from OpenAQ: {base_url} with params {params}")
+        resp = requests.get(base_url, params=params, timeout=20)
 
-    while page <= max_pages:
-        params = base_params.copy()
-        params["page"] = page
-        try:
-            r = requests.get(OPENAQ_ENDPOINT, params=params, timeout=30)
-        except Exception as e:
-            st.error(f"OpenAQ request failed: {e}")
-            break
-        if page == 1:
-            st.write("OpenAQ HTTP status:", r.status_code)
+        if resp.status_code != 200:
+            st.error(f"❌ API request failed: {resp.status_code} - {resp.text}")
+            return pd.DataFrame()
 
-        if r.status_code != 200:
-            try:
-                st.write("OpenAQ response (error):", r.text[:1000])
-            except Exception:
-                pass
-            break
-        payload = r.json()
-        res = payload.get("results", [])
-        if not res:
-            break
-        rows.extend(res)
-        page += 1
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return pd.DataFrame()
 
-    # If primary city query returned nothing, try fallback with coordinates
-    if not rows:
-        st.info("City-level query returned no results. Trying fallback with coordinates + radius.")
-        coords = CITY_COORDS.get(city)
-        if coords:
-            lat, lon = coords
-            fallback_params = {
-                "coordinates": f"{lat},{lon}",
-                "radius": 50000,
-                "parameter": ",".join(parameters),
-                "date_from": date_from,
-                "date_to": date_to,
-                "limit": per_page,
-                "sort": "asc",
-                "order_by": "date",
-            }
-            st.write("OpenAQ Fallback Query (coords + radius):", fallback_params)
-            page = 1
-            while page <= max_pages:
-                params = fallback_params.copy()
-                params["page"] = page
-                try:
-                    r = requests.get(OPENAQ_ENDPOINT, params=params, timeout=30)
-                except Exception as e:
-                    st.error(f"OpenAQ fallback request failed: {e}")
-                    break
-                if page == 1:
-                    st.write("OpenAQ fallback HTTP status:", r.status_code)
-                if r.status_code != 200:
-                    try:
-                        st.write("OpenAQ fallback response (error):", r.text[:1000])
-                    except Exception:
-                        pass
-                    break
-                payload = r.json()
-                res = payload.get("results", [])
-                if not res:
-                    break
-                rows.extend(res)
-                page += 1
+        df = pd.DataFrame(results)
 
-    if not rows:
-        st.write("OpenAQ: no rows found after both city and fallback queries.")
+        # Extract coordinates if available
+        if "coordinates" in df.columns:
+            df["lat"] = df["coordinates"].apply(lambda x: x.get("latitude") if isinstance(x, dict) else None)
+            df["lon"] = df["coordinates"].apply(lambda x: x.get("longitude") if isinstance(x, dict) else None)
+
+        # Ensure datetime is parsed
+        if "date" in df.columns:
+            df["datetime"] = pd.to_datetime(df["date"].apply(lambda x: x.get("utc")))
+        
+        return df
+
+    except Exception as e:
+        st.error(f"⚠️ Error fetching data: {e}")
         return pd.DataFrame()
 
-    # Normalize into dataframe
-    df = pd.json_normalize(rows)
-    if "date.utc" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["date.utc"], errors="coerce")
-    elif "date.local" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["date.local"], errors="coerce")
-    else:
-        df["timestamp"] = pd.NaT
-
-    if "coordinates.latitude" in df.columns and "coordinates.longitude" in df.columns:
-        df["lat"] = pd.to_numeric(df["coordinates.latitude"], errors="coerce")
-        df["lon"] = pd.to_numeric(df["coordinates.longitude"], errors="coerce")
-
-    keep = ["timestamp", "parameter", "value", "unit", "lat", "lon", "location", "country", "city"]
-    df_out = df[[c for c in keep if c in df.columns]].dropna(subset=["timestamp"]).sort_values("timestamp")
-
-    st.write("OpenAQ: total measurements fetched:", len(df_out))
-    st.dataframe(df_out.head(5))  # small preview
-    return df_out
-
-
-# ----------------------------------
-# APP LAYOUT
-# ----------------------------------
-st.title("🌆 Smart City Dashboard")
+# ------------------------
+# Streamlit UI
+# ------------------------
+st.set_page_config(page_title="Smart City Dashboard", layout="wide")
+st.title("🏙️ Smart City Dashboard")
 
 with st.sidebar:
     st.header("Controls")
-    city = st.selectbox("Select city", list(CITY_COORDS.keys()))
-    parameters = st.multiselect(
-        "Pollutants", ["pm25", "pm10", "so2", "no2", "co", "o3"], default=["pm25", "pm10"]
-    )
-    date_to = date.today()
-    date_from = date_to - timedelta(days=30)
-    date_from = st.date_input("From date", date_from)
-    date_to = st.date_input("To date", date_to)
+    city = st.selectbox("Select city", ["Delhi", "Mumbai", "Chennai", "Bengaluru"])
+    params_selected = st.multiselect("Pollutants", ["pm25", "pm10", "so2", "no2", "o3"], default=["pm25", "pm10"])
+    date_from = st.date_input("From date", datetime(2025, 8, 4))
+    date_to = st.date_input("To date", datetime(2025, 9, 3))
+    fetch = st.button("Fetch Data")
 
-    run = st.button("Fetch Data")
+if fetch:
+    with st.spinner("Fetching air quality data..."):
+        df_aq = fetch_openaq(
+            city=city,
+            parameters=params_selected,
+            date_from=f"{date_from}T00:00:00+00:00",
+            date_to=f"{date_to}T23:59:59+00:00",
+        )
 
-if run:
-    with st.spinner("Fetching air quality from OpenAQ ..."):
-        df_aq = fetch_openaq(city, parameters, str(date_from), str(date_to))
-
-    # --- Debug info ---
-    st.write("DEBUG: number of AQ records:", 0 if df_aq is None else len(df_aq))
-    if df_aq is not None and not df_aq.empty:
-        st.write("DEBUG: available parameters in returned data:", sorted(df_aq["parameter"].unique().tolist()))
-
-    if df_aq is None or df_aq.empty:
-        st.warning("No data found for this selection.")
+    if df_aq.empty:
+        st.warning(f"No air quality data found for {city} between {date_from} and {date_to}. Try another range or pollutant.")
     else:
-        st.success("Data loaded!")
-        st.line_chart(df_aq, x="timestamp", y="value", color="parameter")
+        st.success(f"✅ Fetched {len(df_aq)} records")
+
+        # ------------------------
+        # Data preview
+        # ------------------------
+        st.subheader("📋 Data Preview")
+        st.dataframe(df_aq[["datetime", "parameter", "value", "unit", "lat", "lon"]].head(20))
+
+        # ------------------------
+        # Time-series chart
+        # ------------------------
+        if "datetime" in df_aq.columns:
+            st.subheader("📈 Pollutant Trends Over Time")
+            chart = (
+                alt.Chart(df_aq)
+                .mark_line(point=True)
+                .encode(
+                    x="datetime:T",
+                    y="value:Q",
+                    color="parameter:N",
+                    tooltip=["datetime:T", "parameter:N", "value:Q", "unit:N"]
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No datetime field available for plotting trends.")
+
+        # ------------------------
+        # Map Visualization
+        # ------------------------
+        if "lat" in df_aq and "lon" in df_aq:
+            st.subheader("🌍 Measurement Locations")
+            m = folium.Map(location=[df_aq["lat"].mean(), df_aq["lon"].mean()], zoom_start=10)
+
+            for _, row in df_aq.iterrows():
+                folium.CircleMarker(
+                    location=[row["lat"], row["lon"]],
+                    radius=5,
+                    popup=f"{row['parameter']} = {row['value']} {row['unit']}",
+                    color="blue",
+                    fill=True,
+                    fill_opacity=0.6
+                ).add_to(m)
+
+            st_folium(m, width=700, height=500)
+        else:
+            st.info("No coordinates available for mapping.")
