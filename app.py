@@ -9,16 +9,26 @@ import os
 from dotenv import load_dotenv
 
 # ------------------------
+# Load API key
+# ------------------------
+if "OPENAQ_API_KEY" in st.secrets:  # when running on Streamlit Cloud
+    OPENAQ_API_KEY = st.secrets["OPENAQ_API_KEY"]
+else:  # when running locally
+    load_dotenv()
+    OPENAQ_API_KEY = os.getenv("OPENAQ_API_KEY")
+
+# ------------------------
 # Fetch function
 # ------------------------
 def fetch_openaq(city, parameters, date_from, date_to):
-    base_url = "https://api.openaq.org/v3/measurements"  # ✅ Updated to v3
+    base_url = "https://api.openaq.org/v3/measurements"  # ✅ v3
+    headers = {"X-API-Key": OPENAQ_API_KEY}  # ✅ add API key header
     params = {
         "city": city,
         "parameter": parameters,
         "date_from": date_from,
         "date_to": date_to,
-        "limit": 1000,  # v3 has lower per-request limits
+        "limit": 1000,
         "page": 1,
         "offset": 0,
         "sort": "desc",
@@ -27,7 +37,7 @@ def fetch_openaq(city, parameters, date_from, date_to):
 
     try:
         st.info(f"🔗 Fetching from OpenAQ v3: {base_url} with params {params}")
-        resp = requests.get(base_url, params=params, timeout=20)
+        resp = requests.get(base_url, headers=headers, params=params, timeout=20)
 
         if resp.status_code != 200:
             st.error(f"❌ API request failed: {resp.status_code} - {resp.text}")
@@ -54,6 +64,7 @@ def fetch_openaq(city, parameters, date_from, date_to):
     except Exception as e:
         st.error(f"⚠️ Error fetching data: {e}")
         return pd.DataFrame()
+
 
 # ------------------------
 # Streamlit UI
