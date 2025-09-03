@@ -1,0 +1,26 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables (keep API keys safe)
+.env
+
+# Streamlit settings & cache
+.streamlit/
+.streamlit/secrets.toml
+
+# Jupyter Notebook checkpoints (if any)
+.ipynb_checkpoints/
+
+# macOS system files
+.DS_Store
+
+# Logs
+*.log

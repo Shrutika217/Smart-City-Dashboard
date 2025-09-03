@@ -5,6 +5,8 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 import altair as alt
+import os
+from dotenv import load_dotenv
 
 # ------------------------
 # Fetch function
