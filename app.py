@@ -5,27 +5,41 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 import altair as alt
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # ------------------------
-# Fetch available locations
+# Fetch cities
 # ------------------------
-def fetch_locations(country="IN"):
-    """Fetch available OpenAQ locations for a country (default India)."""
-    url = "https://api.openaq.org/v3/locations"
+def fetch_cities(country="IN"):
+    url = "https://api.openaq.org/v3/cities"
     params = {"country": country, "limit": 100}
+    headers = {"X-API-Key": st.secrets["OPENAQ_API_KEY"]}
+
     try:
-        resp = requests.get(url, params=params, timeout=20)
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
         if resp.status_code != 200:
-            st.error(f"❌ Failed to fetch locations: {resp.status_code}")
+            st.error(f"❌ Failed to fetch cities: {resp.status_code} - {resp.text}")
             return []
         data = resp.json()
-        locations = [loc["name"] for loc in data.get("results", [])]
-        return sorted(list(set(locations)))
+        return sorted([city["name"] for city in data.get("results", []) if "name" in city])
+    except Exception as e:
+        st.error(f"⚠️ Error fetching cities: {e}")
+        return []
+
+# ------------------------
+# Fetch locations for a city
+# ------------------------
+def fetch_locations(city, country="IN"):
+    url = "https://api.openaq.org/v3/locations"
+    params = {"country": country, "city": city, "limit": 100}
+    headers = {"X-API-Key": st.secrets["OPENAQ_API_KEY"]}
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            st.error(f"❌ Failed to fetch locations: {resp.status_code} - {resp.text}")
+            return []
+        data = resp.json()
+        return sorted([loc["name"] for loc in data.get("results", []) if "name" in loc])
     except Exception as e:
         st.error(f"⚠️ Error fetching locations: {e}")
         return []
@@ -33,23 +47,23 @@ def fetch_locations(country="IN"):
 # ------------------------
 # Fetch measurements
 # ------------------------
-def fetch_openaq(location, parameters, date_from, date_to):
-    base_url = "https://api.openaq.org/v3/measurements"
+def fetch_measurements(location, parameters, date_from, date_to):
+    url = "https://api.openaq.org/v3/measurements"
     params = {
-        "location": location,   # ✅ v3 requires "location" not "city"
+        "location": location,
         "parameter": parameters,
         "date_from": date_from,
         "date_to": date_to,
         "limit": 1000,
         "page": 1,
+        "offset": 0,
         "sort": "desc",
         "order_by": "datetime"
     }
+    headers = {"X-API-Key": st.secrets["OPENAQ_API_KEY"]}
 
     try:
-        st.info(f"🔗 Fetching from OpenAQ v3: {base_url} with params {params}")
-        resp = requests.get(base_url, params=params, timeout=20)
-
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
         if resp.status_code != 200:
             st.error(f"❌ API request failed: {resp.status_code} - {resp.text}")
             return pd.DataFrame()
@@ -61,72 +75,82 @@ def fetch_openaq(location, parameters, date_from, date_to):
 
         df = pd.DataFrame(results)
 
-        # Extract coordinates
+        # Coordinates
         if "coordinates" in df.columns:
             df["lat"] = df["coordinates"].apply(lambda x: x.get("latitude") if isinstance(x, dict) else None)
             df["lon"] = df["coordinates"].apply(lambda x: x.get("longitude") if isinstance(x, dict) else None)
 
-        # Parse datetime
+        # Datetime
         if "date" in df.columns:
             df["datetime"] = pd.to_datetime(df["date"].apply(lambda x: x.get("utc")))
 
         return df
 
     except Exception as e:
-        st.error(f"⚠️ Error fetching data: {e}")
+        st.error(f"⚠️ Error fetching measurements: {e}")
         return pd.DataFrame()
 
 # ------------------------
 # Streamlit UI
 # ------------------------
-st.set_page_config(page_title="Smart City Dashboard", layout="wide")
+st.title("🏙️ Smart City Air Quality Dashboard")
 
-st.title("🏙️ Smart City Dashboard")
-
-# Sidebar controls
 st.sidebar.header("Controls")
 
-# Fetch available locations dynamically
-locations = fetch_locations("IN")
-location = st.sidebar.selectbox("Select monitoring station", locations if locations else ["Mumbai"])
+# Step 1: Select city
+cities = fetch_cities()
+selected_city = st.sidebar.selectbox("Select City", options=cities)
 
-parameters = st.sidebar.multiselect(
-    "Pollutants",
-    ["pm25", "pm10", "no2", "so2", "co", "o3"],
-    default=["pm25"]
-)
+# Step 2: Select station in city
+locations = fetch_locations(selected_city) if selected_city else []
+selected_location = st.sidebar.selectbox("Select Monitoring Station", options=locations)
 
-date_from = st.sidebar.text_input("From date", "2023-01-01")
-date_to = st.sidebar.text_input("To date", datetime.today().strftime("%Y-%m-%d"))
+# Step 3: Pollutants
+parameters = ["pm25", "pm10", "so2", "no2", "co", "o3", "bc"]
+selected_parameters = st.sidebar.multiselect("Pollutants", options=parameters, default=["pm25", "pm10"])
 
+# Step 4: Date range
+date_from = st.sidebar.date_input("From date", datetime(2023, 1, 1))
+date_to = st.sidebar.date_input("To date", datetime.today())
+
+# Fetch button
 if st.sidebar.button("Fetch Data"):
-    df = fetch_openaq(location, parameters, date_from, date_to)
+    if selected_location and selected_parameters:
+        df = fetch_measurements(
+            location=selected_location,
+            parameters=selected_parameters,
+            date_from=date_from.strftime("%Y-%m-%d"),
+            date_to=date_to.strftime("%Y-%m-%d")
+        )
 
-    if df.empty:
-        st.warning(f"No air quality data found for {location} between {date_from} and {date_to}.")
+        if df.empty:
+            st.warning(f"No air quality data found for {selected_location} between {date_from} and {date_to}.")
+        else:
+            st.success(f"✅ Retrieved {len(df)} records")
+            st.dataframe(df.head())
+
+            # Line chart
+            if "value" in df.columns:
+                chart = alt.Chart(df).mark_line().encode(
+                    x="datetime:T",
+                    y="value:Q",
+                    color="parameter:N"
+                ).properties(width=700, height=400, title="Pollutant Levels Over Time")
+                st.altair_chart(chart)
+
+            # Map
+            if "lat" in df.columns and df["lat"].notnull().any():
+                m = folium.Map(location=[df["lat"].mean(), df["lon"].mean()], zoom_start=10)
+                for _, row in df.iterrows():
+                    if pd.notnull(row["lat"]) and pd.notnull(row["lon"]):
+                        folium.CircleMarker(
+                            location=[row["lat"], row["lon"]],
+                            radius=4,
+                            popup=f"{row['parameter']}: {row['value']} {row['unit']}",
+                            color="blue",
+                            fill=True,
+                            fill_color="blue"
+                        ).add_to(m)
+                st_folium(m, width=700, height=500)
     else:
-        st.success(f"✅ Retrieved {len(df)} records for {location}")
-
-        # Show dataframe
-        st.dataframe(df.head())
-
-        # Plot time series with Altair
-        if "datetime" in df.columns and "value" in df.columns:
-            chart = alt.Chart(df).mark_line().encode(
-                x="datetime:T",
-                y="value:Q",
-                color="parameter:N"
-            ).properties(width=800, height=400, title=f"Air Quality Trends - {location}")
-            st.altair_chart(chart, use_container_width=True)
-
-        # Map view
-        if "lat" in df.columns and "lon" in df.columns:
-            st.subheader("🌍 Monitoring Locations Map")
-            m = folium.Map(location=[df["lat"].mean(), df["lon"].mean()], zoom_start=6)
-            for _, row in df.iterrows():
-                if pd.notnull(row["lat"]) and pd.notnull(row["lon"]):
-                    folium.Marker(
-                        location=[row["lat"], row["lon"]],
-                        popup=f"{row['parameter']}: {row['value']} {row['unit']}"
-                    ).add_to(m)
-            st_folium(m, width=800, height=500)
+        st.warning("⚠️ Please select a city, a monitoring station, and at least one pollutant.")
